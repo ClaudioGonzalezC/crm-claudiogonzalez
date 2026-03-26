@@ -140,7 +140,252 @@ try {
         $proyecto['mostrar_seguimiento_tiempo'] = isset($proyecto['mostrar_seguimiento_tiempo'])
             ? (bool)(int)$proyecto['mostrar_seguimiento_tiempo']
             : true;
-        
+
+        // ─────────────────────────────────────────────────────────────
+        // V2 — CASTING DE CAMPOS ESCALARES
+        // p.* ya los trae — solo normalizamos tipos para el frontend
+        // ─────────────────────────────────────────────────────────────
+        $proyecto['status_v2']                = $proyecto['status_v2'] ?? null;
+        $proyecto['has_project_eval']         = (bool)(int)($proyecto['has_project_eval']         ?? 0);
+        $proyecto['emotional_eval_completed'] = (bool)(int)($proyecto['emotional_eval_completed'] ?? 0);
+        $proyecto['profit_calculated']        = (bool)(int)($proyecto['profit_calculated']        ?? 0);
+        $proyecto['cost_hour']                = isset($proyecto['cost_hour'])         && $proyecto['cost_hour']         !== null ? (float)$proyecto['cost_hour']         : null;
+        $proyecto['overhead_snapshot']        = isset($proyecto['overhead_snapshot']) && $proyecto['overhead_snapshot'] !== null ? (float)$proyecto['overhead_snapshot']  : null;
+        $proyecto['real_hours']               = (float)($proyecto['real_hours'] ?? 0);
+        $proyecto['eval_score']               = isset($proyecto['eval_score'])   && $proyecto['eval_score']   !== null ? (int)  $proyecto['eval_score']   : null;
+        $proyecto['net_profit']               = isset($proyecto['net_profit'])   && $proyecto['net_profit']   !== null ? (float)$proyecto['net_profit']   : null;
+        $proyecto['stress_score']             = isset($proyecto['stress_score']) && $proyecto['stress_score'] !== null ? (float)$proyecto['stress_score'] : null;
+
+        // ─────────────────────────────────────────────────────────────
+        // V2 — SECCIÓN 1: workflow
+        // Lightweight: status_v2, is_closed, flags. Sin valid_transitions.
+        // ─────────────────────────────────────────────────────────────
+        $proyecto['workflow'] = [
+            'status_v2' => $proyecto['status_v2'],
+            'is_closed' => $proyecto['status_v2'] === 'Closed',
+            'flags'     => [
+                'has_project_eval'         => $proyecto['has_project_eval'],
+                'emotional_eval_completed' => $proyecto['emotional_eval_completed'],
+                'profit_calculated'        => $proyecto['profit_calculated'],
+            ],
+        ];
+
+        // ─────────────────────────────────────────────────────────────
+        // V2 — SECCIÓN 2: quote (versión más reciente + items)
+        // ─────────────────────────────────────────────────────────────
+        $stmtQ = $conn->prepare("
+            SELECT id, version_num, subtotal, buffer_pct,
+                   projected_bruto, projected_liquido,
+                   approved, approved_date, created_at
+            FROM   quotes
+            WHERE  project_id = :pid
+            ORDER  BY version_num DESC
+            LIMIT  1
+        ");
+        $stmtQ->execute([':pid' => $id]);
+        $quote = $stmtQ->fetch(PDO::FETCH_ASSOC) ?: null;
+
+        if ($quote) {
+            $quote['id']                = (int)   $quote['id'];
+            $quote['version_num']       = (int)   $quote['version_num'];
+            $quote['subtotal']          = $quote['subtotal']          !== null ? (float) $quote['subtotal']          : null;
+            $quote['buffer_pct']        = $quote['buffer_pct']        !== null ? (float) $quote['buffer_pct']        : null;
+            $quote['projected_bruto']   = $quote['projected_bruto']   !== null ? (float) $quote['projected_bruto']   : null;
+            $quote['projected_liquido'] = $quote['projected_liquido'] !== null ? (float) $quote['projected_liquido'] : null;
+            $quote['approved']          = (bool)  $quote['approved'];
+
+            $stmtQI = $conn->prepare("
+                SELECT id, task_name, est_hours, hourly_rate, line_total
+                FROM   quote_items
+                WHERE  quote_id = :qid
+                ORDER  BY id ASC
+            ");
+            $stmtQI->execute([':qid' => $quote['id']]);
+            $qitems = $stmtQI->fetchAll(PDO::FETCH_ASSOC);
+            foreach ($qitems as &$qi) {
+                $qi['id']          = (int)   $qi['id'];
+                $qi['est_hours']   = (float) $qi['est_hours'];
+                $qi['hourly_rate'] = (float) $qi['hourly_rate'];
+                $qi['line_total']  = (float) $qi['line_total'];
+            }
+            unset($qi);
+            $quote['items'] = $qitems;
+        }
+        $proyecto['quote'] = $quote;
+
+        // ─────────────────────────────────────────────────────────────
+        // V2 — SECCIÓN 3: boletas_v2
+        // Dos queries separadas: list + totals (no se mezcla SUM con list)
+        // ─────────────────────────────────────────────────────────────
+
+        // 3a. list
+        $stmtBL = $conn->prepare("
+            SELECT id, numero_boleta, status, fecha_emision,
+                   monto_bruto, retencion_pct, monto_retencion, monto_liquido,
+                   tipo_cobro, paid_date, payment_method, f29_paid, created_at
+            FROM   boletas
+            WHERE  project_id = :pid
+            ORDER  BY fecha_emision ASC, id ASC
+        ");
+        $stmtBL->execute([':pid' => $id]);
+        $boletas_list = $stmtBL->fetchAll(PDO::FETCH_ASSOC);
+        foreach ($boletas_list as &$bl) {
+            $bl['id']              = (int)   $bl['id'];
+            $bl['monto_bruto']     = (float) $bl['monto_bruto'];
+            $bl['retencion_pct']   = (float) $bl['retencion_pct'];
+            $bl['monto_retencion'] = (float) $bl['monto_retencion'];
+            $bl['monto_liquido']   = (float) $bl['monto_liquido'];
+            $bl['f29_paid']        = (bool)  $bl['f29_paid'];
+        }
+        unset($bl);
+
+        // 3b. totals (query separada)
+        $stmtBT = $conn->prepare("
+            SELECT
+                COUNT(*)                                                                          AS count,
+                COALESCE(SUM(monto_bruto), 0)                                                     AS total_bruto,
+                COALESCE(SUM(monto_retencion), 0)                                                 AS total_retencion,
+                COALESCE(SUM(monto_liquido), 0)                                                   AS total_liquido,
+                COALESCE(SUM(CASE WHEN paid_date IS NOT NULL THEN monto_liquido ELSE 0 END), 0)   AS liquido_cobrado,
+                COALESCE(SUM(CASE WHEN f29_paid = 0 AND paid_date IS NOT NULL THEN 1 ELSE 0 END), 0) AS f29_pendientes
+            FROM boletas
+            WHERE project_id = :pid
+        ");
+        $stmtBT->execute([':pid' => $id]);
+        $bt = $stmtBT->fetch(PDO::FETCH_ASSOC);
+
+        $proyecto['boletas_v2'] = [
+            'count'  => (int) $bt['count'],
+            'totals' => [
+                'total_bruto'     => (float) $bt['total_bruto'],
+                'total_retencion' => (float) $bt['total_retencion'],
+                'total_liquido'   => (float) $bt['total_liquido'],
+                'liquido_cobrado' => (float) $bt['liquido_cobrado'],
+                'f29_pendientes'  => (int)   $bt['f29_pendientes'],
+            ],
+            'list' => $boletas_list,
+        ];
+
+        // ─────────────────────────────────────────────────────────────
+        // V2 — SECCIÓN 4: expenses_v2
+        // ─────────────────────────────────────────────────────────────
+        $stmtEX = $conn->prepare("
+            SELECT id, expense_name, amount, expense_date, category, notes, created_at
+            FROM   project_expenses
+            WHERE  project_id = :pid
+            ORDER  BY expense_date ASC, id ASC
+        ");
+        $stmtEX->execute([':pid' => $id]);
+        $expenses_list  = $stmtEX->fetchAll(PDO::FETCH_ASSOC);
+        $total_expenses = 0.0;
+        foreach ($expenses_list as &$ex2) {
+            $ex2['id']     = (int)   $ex2['id'];
+            $ex2['amount'] = (float) $ex2['amount'];
+            $total_expenses += $ex2['amount'];
+        }
+        unset($ex2);
+
+        $proyecto['expenses_v2'] = [
+            'count'          => count($expenses_list),
+            'total_expenses' => round($total_expenses, 2),
+            'list'           => $expenses_list,
+        ];
+
+        // ─────────────────────────────────────────────────────────────
+        // V2 — SECCIÓN 5: project_eval
+        // null si no existe; answers es array vacío si eval existe sin respuestas
+        // ─────────────────────────────────────────────────────────────
+        $stmtPE = $conn->prepare("
+            SELECT id, score, notes, created_at
+            FROM   project_evals
+            WHERE  project_id = :pid
+            LIMIT  1
+        ");
+        $stmtPE->execute([':pid' => $id]);
+        $project_eval = $stmtPE->fetch(PDO::FETCH_ASSOC) ?: null;
+
+        if ($project_eval) {
+            $project_eval['id']    = (int) $project_eval['id'];
+            $project_eval['score'] = (int) $project_eval['score'];
+
+            $stmtAns = $conn->prepare("
+                SELECT a.question_id, q.question, q.type,
+                       a.answer_value, a.answer_notes
+                FROM   answers a
+                INNER JOIN questions q ON q.id = a.question_id
+                WHERE  a.project_id = :pid
+                  AND  q.module     = 'project_eval'
+                ORDER  BY q.order_num ASC, q.id ASC
+            ");
+            $stmtAns->execute([':pid' => $id]);
+            $answers = $stmtAns->fetchAll(PDO::FETCH_ASSOC);
+            foreach ($answers as &$ans) {
+                $ans['question_id'] = (int) $ans['question_id'];
+            }
+            unset($ans);
+            $project_eval['answers'] = $answers; // [] si no hay respuestas aún
+        }
+        $proyecto['project_eval'] = $project_eval;
+
+        // ─────────────────────────────────────────────────────────────
+        // V2 — SECCIÓN 6: emotional_eval
+        // null si no existe
+        // ─────────────────────────────────────────────────────────────
+        $stmtEE = $conn->prepare("
+            SELECT satisfaction_score, stress_level, client_conflicts,
+                   would_repeat, learning_outcome, final_notes, created_at
+            FROM   emotional_evals
+            WHERE  project_id = :pid
+            LIMIT  1
+        ");
+        $stmtEE->execute([':pid' => $id]);
+        $emotional_eval = $stmtEE->fetch(PDO::FETCH_ASSOC) ?: null;
+
+        if ($emotional_eval) {
+            $emotional_eval['satisfaction_score'] = $emotional_eval['satisfaction_score'] !== null ? (float) $emotional_eval['satisfaction_score'] : null;
+            $emotional_eval['stress_level']       = $emotional_eval['stress_level']       !== null ? (float) $emotional_eval['stress_level']       : null;
+            $emotional_eval['client_conflicts']   = (bool) $emotional_eval['client_conflicts'];
+            $emotional_eval['would_repeat']       = (bool) $emotional_eval['would_repeat'];
+        }
+        $proyecto['emotional_eval'] = $emotional_eval;
+
+        // ─────────────────────────────────────────────────────────────
+        // V2 — SECCIÓN 7: time_summary
+        // Agregado de bitacora_horas por tipo (ENUM oficial: crm_spec.md)
+        // ─────────────────────────────────────────────────────────────
+        $stmtTS = $conn->prepare("
+            SELECT   type, SUM(horas) AS total_horas
+            FROM     bitacora_horas
+            WHERE    proyecto_id = :pid
+            GROUP BY type
+        ");
+        $stmtTS->execute([':pid' => $id]);
+        $time_rows = $stmtTS->fetchAll(PDO::FETCH_ASSOC);
+
+        $by_type = [
+            'billable_dev'     => 0.0,
+            'meeting'          => 0.0,
+            'non_billable_fix' => 0.0,
+            'admin'            => 0.0,
+        ];
+        $total_hours_v2 = 0.0;
+        foreach ($time_rows as $tr) {
+            $t = $tr['type'];
+            $h = (float) $tr['total_horas'];
+            if (array_key_exists($t, $by_type)) {
+                $by_type[$t] = $h;
+            }
+            $total_hours_v2 += $h;
+        }
+
+        $proyecto['time_summary'] = [
+            'total_hours' => round($total_hours_v2, 2),
+            'by_type'     => $by_type,
+        ];
+
+        // ─────────────────────────────────────────────────────────────
+        // FIN V2 — retornar respuesta completa
+        // ─────────────────────────────────────────────────────────────
         echo json_encode($proyecto);
     } else {
         http_response_code(404);
