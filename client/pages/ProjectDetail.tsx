@@ -5,7 +5,6 @@ import { Loader2, AlertCircle, ArrowLeft, LogOut, Settings, Plus, Trash2, EyeOff
 import { useAuth } from "@/contexts/AuthContext";
 import { DEFAULT_TERMS } from "@/constants/terms";
 import ProjectStatusComponent from "@/components/ProjectStatus";
-import { ExtraCost } from "@/components/FinancialSummary";
 import NotesSection, { Note } from "@/components/NotesSection";
 import RevisionCounter from "@/components/RevisionCounter";
 import TotalCalculator from "@/components/TotalCalculator";
@@ -16,6 +15,16 @@ import AssetStatusCard from "@/components/AssetStatusCard";
 import ClientShareUrl from "@/components/ClientShareUrl";
 import Logo from "@/components/Logo";
 import Footer from "@/components/Footer";
+import WorkflowPanel from "@/components/WorkflowPanel";
+import V2FlagsDisplay from "@/components/V2FlagsDisplay";
+import BoletaManagement from "@/components/v2/BoletaManagement";
+import ExpensesManagement from "@/components/v2/ExpensesManagement";
+import ProjectEvalForm from "@/components/v2/ProjectEvalForm";
+import EmotionalEvalForm from "@/components/v2/EmotionalEvalForm";
+import QuoteBuilder from "@/components/v2/QuoteBuilder";
+import ProfitabilityCalculator from "@/components/ProfitabilityCalculator";
+import BillingPlanConfigurator from "@/components/v2/BillingPlanConfigurator";
+import FinalizeClosePanel from "@/components/v2/FinalizeClosePanel";
 
 type ProjectStatusType =
   | "Cotización"
@@ -61,6 +70,151 @@ interface ProjectData {
   terminos_aceptados?: number;       // 0 or 1 - whether client accepted
   fecha_aceptacion?: string;         // When client accepted (DATETIME)
   mostrar_seguimiento_tiempo?: boolean; // Control visibilidad tiempo en portal cliente
+
+  // ── V2 scalar fields ──────────────────────────────────────────
+  status_v2?:  string | null;
+  closed_at?:  string | null;
+  has_project_eval?: boolean;
+  emotional_eval_completed?: boolean;
+  profit_calculated?: boolean;
+  cost_hour?: number | null;
+  overhead_snapshot?: number | null;
+  real_hours?: number | null;
+  net_profit?: number | null;
+  stress_score?: number | null;
+
+  // ── V2 sections (populated by get_proyecto_detalle.php) ───────
+  workflow?: V2Workflow | null;
+  quote?: V2Quote | null;
+  boletas_v2?: V2BoletasSection | null;
+  expenses_v2?: V2ExpensesSection | null;
+  project_eval?: V2ProjectEval | null;
+  emotional_eval?: V2EmotionalEval | null;
+  time_summary?: V2TimeSummary | null;
+}
+
+// ── V2 TYPE DEFINITIONS ────────────────────────────────────────────────────
+
+interface V2Flags {
+  has_project_eval: boolean;
+  emotional_eval_completed: boolean;
+  profit_calculated: boolean;
+}
+
+interface V2Workflow {
+  status_v2:  string;
+  is_closed:  boolean;
+  closed_at:  string | null;
+  flags:      V2Flags;
+}
+
+// quote_items: task_name is the real column name (not description)
+interface V2QuoteItem {
+  id: number;
+  task_name: string;
+  est_hours: number;
+  hourly_rate: number;
+  line_total: number;
+}
+
+// quotes: approved (bool) + approved_date; no status string; nullable numerics
+interface V2Quote {
+  id: number;
+  version_num: number;
+  approved: boolean;
+  approved_date: string | null;
+  created_at: string;
+  subtotal: number | null;
+  buffer_pct: number | null;
+  projected_bruto: number | null;
+  projected_liquido: number | null;
+  items: V2QuoteItem[];
+}
+
+// boletas: numero_boleta (not folio), paid_date (not fecha_pago)
+interface V2Boleta {
+  id: number;
+  numero_boleta: string | null;
+  status: string;
+  fecha_emision: string | null;
+  monto_bruto: number;
+  retencion_pct: number;
+  monto_retencion: number;
+  monto_liquido: number;
+  tipo_cobro: string | null;
+  paid_date: string | null;
+  payment_method: string | null;
+  f29_paid: boolean;
+  created_at: string;
+}
+
+// boletas_v2: nested totals object (not flat); liquido_cobrado lives inside totals
+interface V2BoletasTotals {
+  total_bruto: number;
+  total_retencion: number;
+  total_liquido: number;
+  liquido_cobrado: number;
+  f29_pendientes: number;
+}
+
+interface V2BoletasSection {
+  count: number;
+  totals: V2BoletasTotals;
+  list: V2Boleta[];
+}
+
+interface V2Expense {
+  id: number;
+  expense_name: string;
+  amount: number;
+  expense_date: string;
+  category: string;
+  notes: string | null;
+  created_at: string;
+}
+
+interface V2ExpensesSection {
+  count: number;
+  total_expenses: number;
+  list: V2Expense[];
+}
+
+// project_eval: answers include question text and type (joined from questions table)
+interface V2EvalAnswer {
+  question_id: number;
+  question: string;
+  type: string;
+  answer_value: string;
+  answer_notes: string | null;
+}
+
+interface V2ProjectEval {
+  id: number;
+  score: number;
+  notes: string | null;
+  created_at: string;
+  answers: V2EvalAnswer[];
+}
+
+// emotional_eval: exact fields from emotional_evals table
+interface V2EmotionalEval {
+  satisfaction_score: number | null;
+  stress_level: number | null;
+  client_conflicts: boolean;
+  would_repeat: boolean;
+  learning_outcome: string | null;
+  final_notes: string | null;
+  created_at: string;
+}
+
+interface V2TimeSummary {
+  total_hours: number;
+  by_type: {
+    billable_dev: number;
+    meeting: number;
+    non_billable_fix: number;
+    admin: number;
+  };
 }
 
 export default function ProjectDetail() {
@@ -75,7 +229,6 @@ export default function ProjectDetail() {
 
 
   const [project, setProject] = useState<ProjectData | null>(null);
-  const [extraCosts, setExtraCosts] = useState<ExtraCost[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [timeEntries, setTimeEntries] = useState<TimeEntry[]>([]);
@@ -198,6 +351,26 @@ export default function ProjectDetail() {
         mostrar_seguimiento_tiempo: rawProjectData.mostrar_seguimiento_tiempo !== undefined
           ? Boolean(rawProjectData.mostrar_seguimiento_tiempo)
           : true, // Default visible si la columna aún no existe en BD
+
+        // ── V2 scalar fields ────────────────────────────────────
+        status_v2: rawProjectData.status_v2 ?? null,
+        has_project_eval:         Boolean(rawProjectData.has_project_eval),
+        emotional_eval_completed: Boolean(rawProjectData.emotional_eval_completed),
+        profit_calculated:        Boolean(rawProjectData.profit_calculated),
+        cost_hour:         rawProjectData.cost_hour         != null ? parseFloat(rawProjectData.cost_hour)         || null : null,
+        overhead_snapshot: rawProjectData.overhead_snapshot != null ? parseFloat(rawProjectData.overhead_snapshot) || null : null,
+        real_hours:        rawProjectData.real_hours        != null ? parseFloat(rawProjectData.real_hours)        || null : null,
+        net_profit:        rawProjectData.net_profit        != null ? parseFloat(rawProjectData.net_profit)        || null : null,
+        stress_score:      rawProjectData.stress_score      != null ? parseFloat(rawProjectData.stress_score)      || null : null,
+
+        // ── V2 sections (pass through as-is from API) ──────────
+        workflow:       rawProjectData.workflow       ?? null,
+        quote:          rawProjectData.quote          ?? null,
+        boletas_v2:     rawProjectData.boletas_v2     ?? null,
+        expenses_v2:    rawProjectData.expenses_v2    ?? null,
+        project_eval:   rawProjectData.project_eval   ?? null,
+        emotional_eval: rawProjectData.emotional_eval ?? null,
+        time_summary:   rawProjectData.time_summary   ?? null,
       };
 
       console.log("Proyecto cargado (sanitizado):", projectData);
@@ -217,19 +390,6 @@ export default function ProjectDetail() {
 
       setProject(projectData);
       setTermsText(projectData.terminos_condiciones || DEFAULT_TERMS);
-
-      // Fetch extra costs with cache buster
-      try {
-        const costsResponse = await axios.get(
-          `https://crm.claudiogonzalez.dev/api/gestionar_extras.php?proyecto_id=${projectNum}&accion=obtener&t=${timestamp}`
-        );
-        const costsData = Array.isArray(costsResponse.data)
-          ? costsResponse.data
-          : costsResponse.data.extras || [];
-        setExtraCosts(costsData);
-      } catch (err) {
-        console.error("Error fetching extra costs:", err);
-      }
 
       // Fetch notes with cache buster
       try {
@@ -410,6 +570,10 @@ export default function ProjectDetail() {
     );
   }
 
+  // ── V2 detection — single source of truth for the entire render ──────────
+  // Computed once at component scope; referenced by both rendering blocks.
+  const isV2Project = !!project.workflow?.status_v2 || !!project.status_v2;
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 flex flex-col">
       {/* Header */}
@@ -517,25 +681,156 @@ export default function ProjectDetail() {
           />
         )}
 
-        {/* Calculate totals for payment validation */}
+        {/* ── V2 block — isV2Project from component scope ──────────────── */}
         {(() => {
           // base_boleta = lo que se boletea; monto_total_contrato = deuda real (para saldo)
           const totalContrato = Math.round(project.base_boleta || project.monto_bruto || 0);
           const totalPaid = payments.reduce((sum, payment) => sum + payment.monto, 0);
 
           return (
-            <ProjectStatusComponent
-              projectId={project.id}
-              currentStatus={project.estado}
-              totalPaid={totalPaid}
-              totalContract={totalContrato}
-              totalRevisions={project.revisiones_totales ?? project.revisiones_incluidas ?? 0}
-              revisionsUsed={project.revisiones_usadas || 0}
-              onStatusChange={(newStatus) => {
-                setProject({ ...project, estado: newStatus as ProjectStatusType });
-              }}
-              onStatusChangeSuccess={fetchProjectData}
-            />
+            <>
+              {/* Workflow V2 Panel — solo para proyectos V2 */}
+              {isV2Project && (
+                <WorkflowPanel
+                  projectId={project.id}
+                  workflow={project.workflow ?? null}
+                  onTransitionSuccess={fetchProjectData}
+                />
+              )}
+
+              {/* V2 Flags — solo para proyectos V2 */}
+              {isV2Project && project.workflow?.flags && (
+                <V2FlagsDisplay
+                  flags={project.workflow.flags}
+                  statusV2={project.workflow.status_v2}
+                />
+              )}
+
+              {/* ── Plan de Cobro ─────────────────────────────────── */}
+              {isV2Project && (
+                <div className="mt-4">
+                  <BillingPlanConfigurator projectId={project.id} />
+                </div>
+              )}
+
+              {/* ── Evaluaciones (agrupadas) ──────────────────────── */}
+              {isV2Project && (
+                <div className="space-y-4 mt-6">
+                  {/* Section label */}
+                  <div className="flex items-center gap-3 px-1">
+                    <span className="text-gray-400 text-sm font-semibold shrink-0">
+                      Evaluación del proyecto
+                    </span>
+                    <div className="flex-1 h-px bg-slate-700" />
+                  </div>
+
+                  {/* Pre-evaluación */}
+                  <div className="space-y-1.5">
+                    <p className="text-gray-600 text-xs px-1">
+                      Pre-evaluación — antes de ejecutar
+                    </p>
+                    <ProjectEvalForm
+                      projectId={project.id}
+                      onDataChange={fetchProjectData}
+                    />
+                  </div>
+
+                  {/* Evaluación emocional — gated by statusV2 inside the component */}
+                  <div className="space-y-1.5">
+                    <p className="text-gray-600 text-xs px-1">
+                      Evaluación post-ejecución
+                    </p>
+                    <EmotionalEvalForm
+                      projectId={project.id}
+                      statusV2={project.workflow?.status_v2 ?? project.status_v2 ?? ""}
+                      onDataChange={fetchProjectData}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* ── Cotización (QuoteBuilder) ─────────────────────── */}
+              {isV2Project && (
+                <div className="mt-6 mb-4">
+                  <p className="text-xs uppercase tracking-wider text-gray-500 mb-2 px-1">
+                    Propuesta / Cotización
+                  </p>
+                  <div className="p-4 rounded-xl border border-slate-700/40 bg-slate-900/30">
+                    <QuoteBuilder
+                      projectId={project.id}
+                      defaultRate={project.cost_hour ?? 0}
+                      onDataChange={fetchProjectData}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Estado legacy:
+                  - Proyectos V2: muestra como badge informativo (isV2Mode=true)
+                  - Proyectos legacy: panel completo con control de estado */}
+              <ProjectStatusComponent
+                projectId={project.id}
+                currentStatus={project.estado}
+                totalPaid={totalPaid}
+                totalContract={totalContrato}
+                totalRevisions={project.revisiones_totales ?? project.revisiones_incluidas ?? 0}
+                revisionsUsed={project.revisiones_usadas || 0}
+                onStatusChange={(newStatus) => {
+                  setProject({ ...project, estado: newStatus as ProjectStatusType });
+                }}
+                onStatusChangeSuccess={fetchProjectData}
+                isV2Mode={isV2Project}
+              />
+
+              {/* ── Finanzas (agrupadas) ───────────────────────────────── */}
+              {isV2Project && (
+                <div className="space-y-4 mt-6">
+                  {/* Section label */}
+                  <div className="flex items-center gap-3 px-1">
+                    <span className="text-gray-400 text-sm font-semibold shrink-0">
+                      Finanzas del proyecto
+                    </span>
+                    <div className="flex-1 h-px bg-slate-700" />
+                  </div>
+
+                  <BoletaManagement
+                    projectId={project.id}
+                    initialData={project.boletas_v2 ?? null}
+                    statusV2={project.workflow?.status_v2 ?? project.status_v2 ?? ""}
+                    onDataChange={fetchProjectData}
+                  />
+                  <ExpensesManagement
+                    projectId={project.id}
+                    initialData={project.expenses_v2 ?? null}
+                  />
+                  <ProfitabilityCalculator
+                    isV2Mode={true}
+                    v2Data={{
+                      profit_calculated: project.profit_calculated ?? false,
+                      net_profit:        project.net_profit         ?? null,
+                      real_hours:        project.real_hours          ?? null,
+                      cost_hour:         project.cost_hour           ?? null,
+                      overhead_snapshot: project.overhead_snapshot   ?? null,
+                      liquidoCobrado:    project.boletas_v2?.totals?.liquido_cobrado ?? 0,
+                      total_expenses:    project.expenses_v2?.total_expenses          ?? 0,
+                      projectId:         project.id,
+                    }}
+                    onV2Calculated={fetchProjectData}
+                  />
+                </div>
+              )}
+
+              {/* ── Cierre formal ─────────────────────────────────────── */}
+              {isV2Project && project.workflow?.flags && (
+                <FinalizeClosePanel
+                  projectId={project.id}
+                  statusV2={project.workflow.status_v2}
+                  flags={project.workflow.flags}
+                  closedAt={project.workflow.closed_at ?? null}
+                  onCloseSuccess={fetchProjectData}
+                />
+              )}
+            </>
           );
         })()}
 
@@ -683,8 +978,8 @@ export default function ProjectDetail() {
           rol={rol}
         />
 
-        {/* Total Calculator - Shows final values from database (REGLA DE ORO) */}
-        {(() => {
+        {/* Total Calculator + Costos Extra — legacy only, V2 uses ExpensesManagement */}
+        {!isV2Project && (() => {
           // Calculate retencion_sii from bruto - liquido
           const montoBruto = Math.round(project.monto_bruto || 0);
           const montoLiquido = Math.round(project.monto_liquido || 0);
@@ -701,8 +996,8 @@ export default function ProjectDetail() {
           );
         })()}
 
-        {/* Costos Extra - Visibility Indicator */}
-        {project.costos_extra && project.costos_extra.length > 0 && (
+        {/* Costos Extra - Visibility Indicator — legacy only */}
+        {!isV2Project && project.costos_extra && project.costos_extra.length > 0 && (
           <div className="bg-gradient-to-br from-slate-900 to-slate-800 border border-slate-700/50 rounded-2xl p-8">
             <div className="flex items-center gap-2 mb-6">
               <div className="w-1 h-6 bg-gradient-to-b from-cyan-500 to-blue-500 rounded-full"></div>
@@ -765,22 +1060,26 @@ export default function ProjectDetail() {
         {(() => {
           // base_boleta = lo que se boletea; monto_total_contrato = deuda real (para saldo)
           const totalContrato = Math.round(project.base_boleta || project.monto_bruto || 0);
+          // isV2Project from component scope (computed before return)
 
           return (
             <>
               {/* Tabs for Payment Management and File Management */}
               <div className="space-y-4">
                 <div className="flex gap-2 border-b border-slate-700/50">
-                  <button
-                    onClick={() => setActiveTab("pagos")}
-                    className={`px-4 py-3 font-semibold text-sm transition border-b-2 ${
-                      activeTab === "pagos"
-                        ? "border-blue-500 text-blue-400"
-                        : "border-transparent text-gray-400 hover:text-gray-300"
-                    }`}
-                  >
-                    Gestión de Pagos
-                  </button>
+                  {/* Payment tab hidden for V2 projects — managed by BoletaManagement */}
+                  {!isV2Project && (
+                    <button
+                      onClick={() => setActiveTab("pagos")}
+                      className={`px-4 py-3 font-semibold text-sm transition border-b-2 ${
+                        activeTab === "pagos"
+                          ? "border-blue-500 text-blue-400"
+                          : "border-transparent text-gray-400 hover:text-gray-300"
+                      }`}
+                    >
+                      Gestión de Pagos
+                    </button>
+                  )}
                   <button
                     onClick={() => setActiveTab("documentos")}
                     className={`px-4 py-3 font-semibold text-sm transition border-b-2 ${
@@ -793,8 +1092,8 @@ export default function ProjectDetail() {
                   </button>
                 </div>
 
-                {/* Tab Content: Payment Management */}
-                {activeTab === "pagos" && (
+                {/* Tab Content: Payment Management — legacy only, never for V2 */}
+                {!isV2Project && activeTab === "pagos" && (
                   <PaymentManagement
                     projectId={project.id}
                     payments={payments}
@@ -829,6 +1128,8 @@ export default function ProjectDetail() {
                 onTimeEntriesUpdate={setTimeEntries}
                 onRegisterSuccess={fetchProjectData}
                 rol={rol}
+                isV2Mode={isV2Project}
+                timeSummary={isV2Project ? (project.time_summary ?? null) : null}
               />
             </>
           );
